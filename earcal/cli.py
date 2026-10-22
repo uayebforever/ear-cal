@@ -2,9 +2,9 @@
 
 Deliberately text-only and minimal: the whole point is that the user
 never sees which frequency or level is playing, only "what did you just
-hear relative to the one before it?" Default key mapping is deliberately
-not 1/2/3 in frequency/volume order, so there's nothing ordinal to latch
-onto: q = quieter, s = same, l = louder.
+hear relative to the one before it?" Response keys are four adjacent
+home-row-ish keys, pressed with no Enter needed: a = didn't hear,
+s = quieter, d = same, f = louder.
 """
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ import os
 import sys
 
 from earcal.audio_io import AudioUnavailableError, play_blocking, probe_output_device
-from earcal.session import Session
+from earcal.keypress import read_key
+from earcal.session import INAUDIBLE_RESPONSE, Session
 from earcal.synth import synth_tone
 
 DEFAULT_SESSION_PATH = os.path.expanduser("~/.earcal/session.json")
@@ -23,14 +24,13 @@ PRACTICE_TRIALS = 5
 MAX_TRIALS_SAFETY_CAP = 4000
 
 RESPONSE_KEYS = {
-    "q": "quieter",
-    "quieter": "quieter",
-    "s": "same",
-    "same": "same",
-    "l": "louder",
-    "louder": "louder",
+    "a": INAUDIBLE_RESPONSE,
+    "s": "quieter",
+    "d": "same",
+    "f": "louder",
 }
-QUIT_KEYS = {"x", "quit", "exit"}
+QUIT_KEYS = {"x"}
+PROMPT = "[a] didn't hear   [s] quieter   [d] same   [f] louder   ([x] to stop): "
 
 
 class QuitRequested(Exception):
@@ -48,14 +48,18 @@ def make_play_tone():
 def make_ask_response(prompt_prefix: str = "") -> callable:
     def ask() -> str:
         while True:
-            raw = input(
-                f"{prompt_prefix}quieter [q] / same [s] / louder [l]  (or 'x' to stop): "
-            ).strip().lower()
-            if raw in QUIT_KEYS:
+            print(f"{prompt_prefix}{PROMPT}", end="", flush=True)
+            try:
+                key = read_key()
+            except KeyboardInterrupt:
+                print()
                 raise QuitRequested()
-            if raw in RESPONSE_KEYS:
-                return RESPONSE_KEYS[raw]
-            print("  (didn't understand that - type q, s, or l)")
+            print(key)
+            if key in QUIT_KEYS:
+                raise QuitRequested()
+            if key in RESPONSE_KEYS:
+                return RESPONSE_KEYS[key]
+            print("  (didn't understand that - press a, s, d, or f)")
 
     return ask
 
@@ -108,6 +112,8 @@ def run_main_loop(session: Session, ask_response) -> None:
     print("the one you just heard. Differences start out large and should get")
     print("harder to hear as the test learns your curve. Progress saves after")
     print("every trial, so it's safe to stop anytime with 'x' and resume later.")
+    print("Didn't catch one, or got distracted? Press 'a' - it's thrown out,")
+    print("not counted as a real answer, and doesn't change your results.")
     print()
 
     session.prime()
@@ -122,9 +128,12 @@ def run_main_loop(session: Session, ask_response) -> None:
             )
             announced_converged = True
         try:
-            session.run_trial()
+            outcome = session.run_trial()
         except QuitRequested:
             break
+        if outcome.response == INAUDIBLE_RESPONSE:
+            print("  (discarded - not counted)")
+            continue
         trial += 1
         print(f"  trial {session.model.trial_num} done ({conv:.0%} converged)")
 
@@ -166,7 +175,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     print(f"\nSaved. {session.convergence_fraction():.0%} of bands converged, "
-          f"{session.model.trial_num} trials so far.")
+          f"{session.model.trial_num} trials so far "
+          f"({session.discarded_count} discarded as not heard).")
     print(f"Run `earcal report --session {args.session}` for your curve.")
 
 

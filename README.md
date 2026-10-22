@@ -72,10 +72,13 @@ First run walks you through:
    relative to that level.
 2. **Practice** - a handful of unscored trials with obvious differences,
    just to get used to responding.
-3. **The real test** - `q` (quieter) / `s` (same) / `l` (louder), or `x`
-   anytime to stop. Progress saves after every trial, so stopping and
-   resuming later (`earcal run` again, same `--session` path) picks up
-   exactly where you left off.
+3. **The real test** - four adjacent keys, no Enter needed:
+   `a` didn't hear it · `s` quieter · `d` same · `f` louder. `x` stops
+   anytime. Progress saves after every trial, so stopping and resuming
+   later (`earcal run` again, same `--session` path) picks up exactly
+   where you left off. A `didn't hear` response is thrown out rather
+   than scored - it doesn't move your estimate, and the tone you're
+   next compared against stays whatever you last actually heard.
 
 When you've got enough convergence (the test tells you when most bands
 are there, but you can keep refining):

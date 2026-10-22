@@ -22,6 +22,8 @@ from earcal.synth import MAX_LEVEL_DB, MIN_LEVEL_DB
 
 SCHEMA_VERSION = 1
 
+INAUDIBLE_RESPONSE = "inaudible"
+
 PlayTone = Callable[[float, float], None]
 AskResponse = Callable[[], str]
 
@@ -47,6 +49,7 @@ class Session:
         base_level_db: float = 0.0,
         path: str | None = None,
         created_at: float | None = None,
+        discarded_count: int = 0,
     ) -> None:
         self.bands = bands
         self.model = model
@@ -57,6 +60,7 @@ class Session:
         self.base_level_db = base_level_db
         self.path = path
         self.created_at = created_at or time.time()
+        self.discarded_count = discarded_count
 
     @classmethod
     def new(
@@ -100,6 +104,7 @@ class Session:
             base_level_db=data["base_level_db"],
             path=path,
             created_at=data["created_at"],
+            discarded_count=data.get("discarded_count", 0),
         )
 
     def save(self) -> None:
@@ -113,6 +118,7 @@ class Session:
             "base_level_db": self.base_level_db,
             "prev_band_idx": self.prev_band_idx,
             "prev_level_db": self.prev_level_db,
+            "discarded_count": self.discarded_count,
             "model": self.model.snapshot(),
             "history": [dataclasses.asdict(r) for r in self.model.history],
             "rng_state": self.model.rng.bit_generator.state,
@@ -152,6 +158,16 @@ class Session:
         self.play_tone(next_band.freq_hz, next_level_db)
         response = self.ask_response()
 
+        outcome = TrialOutcome(prev_band, next_band, next_level_db, delta_db, response)
+
+        if response == INAUDIBLE_RESPONSE:
+            # Discarded: not fed to the model, and the "last sound heard"
+            # stays whatever it was before this one, since the user didn't
+            # actually perceive it.
+            self.discarded_count += 1
+            self.save()
+            return outcome
+
         self.model.observe(
             self.prev_band_idx,
             next_band.index,
@@ -161,7 +177,6 @@ class Session:
             next_level_db=next_level_db,
         )
 
-        outcome = TrialOutcome(prev_band, next_band, next_level_db, delta_db, response)
         self.prev_band_idx = next_band.index
         self.prev_level_db = next_level_db
         self.save()

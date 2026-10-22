@@ -1,6 +1,6 @@
 import itertools
 
-from earcal.session import Session
+from earcal.session import INAUDIBLE_RESPONSE, Session
 
 
 def _fake_player(calls):
@@ -74,3 +74,45 @@ def test_save_and_load_roundtrip(tmp_path):
     # resuming should work seamlessly
     reloaded.run_trial()
     assert len(reloaded.model.history) == trial_count_before + 1
+
+
+def test_inaudible_response_is_discarded_not_recorded(tmp_path):
+    calls = []
+    session = Session.new(
+        play_tone=_fake_player(calls),
+        ask_response=_fake_responder(["same"]),
+        path=str(tmp_path / "session.json"),
+        seed=0,
+    )
+    session.prime()
+
+    prev_idx_before = session.prev_band_idx
+    prev_level_before = session.prev_level_db
+    trial_num_before = session.model.trial_num
+
+    session.ask_response = lambda: INAUDIBLE_RESPONSE
+    outcome = session.run_trial()
+
+    assert outcome.response == INAUDIBLE_RESPONSE
+    assert session.discarded_count == 1
+    assert len(session.model.history) == 0
+    assert session.model.trial_num == trial_num_before
+    # "last sound heard" is unchanged, since this one wasn't heard
+    assert session.prev_band_idx == prev_idx_before
+    assert session.prev_level_db == prev_level_before
+
+
+def test_discarded_count_persists_across_save_load(tmp_path):
+    path = str(tmp_path / "session.json")
+    session = Session.new(
+        play_tone=_fake_player([]),
+        ask_response=lambda: INAUDIBLE_RESPONSE,
+        path=path,
+        seed=0,
+    )
+    session.prime()
+    session.run_trial()
+    session.run_trial()
+
+    reloaded = Session.load(path, play_tone=_fake_player([]), ask_response=lambda: "same")
+    assert reloaded.discarded_count == 2
