@@ -13,6 +13,7 @@ import numpy as np
 
 from earcal.bands import Band, TYPICAL_SHAPE_HZ_DB, build_bands
 from earcal.model import HearingModel
+from earcal.synth import MAX_LEVEL_DB, MIN_LEVEL_DB
 
 
 class VirtualListener:
@@ -70,6 +71,7 @@ def run_simulation(
     seed: int = 0,
     jnd_db: float = 2.5,
     internal_noise_db: float = 1.2,
+    base_level_db: float = 0.0,
 ) -> dict:
     bands = bands or build_bands()
     rng = np.random.default_rng(seed)
@@ -79,12 +81,15 @@ def run_simulation(
     listener = VirtualListener(true_offsets, jnd_db, internal_noise_db, rng)
 
     prev_band = next(b for b in bands if b.is_reference)
-    prev_level_db = 0.0
+    prev_level_db = base_level_db
     rms_error_history = []
+    level_history = []
 
     for _ in range(n_trials):
         next_band = model.select_next_band(prev_band.index)
-        next_level_db, delta_db = model.plan_trial(prev_band, prev_level_db, next_band)
+        next_level_db, delta_db = model.plan_trial(
+            prev_band, prev_level_db, next_band, base_level_db
+        )
 
         response = listener.judge(prev_band.index, prev_level_db, next_band.index, next_level_db)
 
@@ -102,13 +107,16 @@ def run_simulation(
         rms_error_history.append(float(np.sqrt(np.mean(np.square(errs)))))
 
         prev_band, prev_level_db = next_band, next_level_db
-        prev_level_db = max(-20.0, min(prev_level_db, 6.0))
+        prev_level_db = max(MIN_LEVEL_DB, min(prev_level_db, MAX_LEVEL_DB))
+        level_history.append(prev_level_db)
 
     return {
         "true_offsets": true_offsets,
         "estimated_offsets": model.offsets(),
         "rms_error_history": rms_error_history,
         "convergence_fraction": model.convergence_fraction(),
+        "uncertainty_db": model.uncertainty_db(),
+        "level_history": level_history,
         "bands": bands,
     }
 
@@ -118,6 +126,12 @@ def _main() -> None:
     bands_by_idx = {b.index: b for b in result["bands"]}
     print(f"final RMS error: {result['rms_error_history'][-1]:.2f} dB")
     print(f"convergence fraction: {result['convergence_fraction']:.0%}")
+    print(f"reported uncertainty: +/-{result['uncertainty_db']:.2f} dB")
+    levels = np.array(result["level_history"])
+    print(
+        f"presented level drift: mean={levels.mean():.1f} dB  "
+        f"std={levels.std():.1f} dB  range=[{levels.min():.1f}, {levels.max():.1f}] dB"
+    )
     print(f"{'freq':>8}  {'true':>7}  {'est':>7}  {'err':>6}")
     for idx in sorted(bands_by_idx):
         t = result["true_offsets"][idx]

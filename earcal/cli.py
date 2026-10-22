@@ -2,9 +2,9 @@
 
 Deliberately text-only and minimal: the whole point is that the user
 never sees which frequency or level is playing, only "what did you just
-hear relative to the one before it?" Response keys are four adjacent
+hear relative to the one before it?" Response keys are five adjacent
 home-row-ish keys, pressed with no Enter needed: a = didn't hear,
-s = quieter, d = same, f = louder.
+s = quieter, d = same, f = louder, g = replay both tones again.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import sys
 
 from earcal.audio_io import AudioUnavailableError, play_blocking, probe_output_device
 from earcal.keypress import read_key
-from earcal.session import INAUDIBLE_RESPONSE, Session
+from earcal.session import INAUDIBLE_RESPONSE, REPEAT_RESPONSE, Session
 from earcal.synth import synth_tone
 
 DEFAULT_SESSION_PATH = os.path.expanduser("~/.earcal/session.json")
@@ -28,9 +28,13 @@ RESPONSE_KEYS = {
     "s": "quieter",
     "d": "same",
     "f": "louder",
+    "g": REPEAT_RESPONSE,
 }
 QUIT_KEYS = {"x"}
-PROMPT = "[a] didn't hear   [s] quieter   [d] same   [f] louder   ([x] to stop): "
+PROMPT = (
+    "[a] didn't hear   [s] quieter   [d] same   [f] louder   "
+    "[g] play again   ([x] to stop): "
+)
 
 
 class QuitRequested(Exception):
@@ -58,8 +62,13 @@ def make_ask_response(prompt_prefix: str = "") -> callable:
             if key in QUIT_KEYS:
                 raise QuitRequested()
             if key in RESPONSE_KEYS:
-                return RESPONSE_KEYS[key]
-            print("  (didn't understand that - press a, s, d, or f)")
+                resp = RESPONSE_KEYS[key]
+                if resp == INAUDIBLE_RESPONSE:
+                    print("  (missed it - replaying the reference, then a different tone)")
+                elif resp == REPEAT_RESPONSE:
+                    print("  (playing both again)")
+                return resp
+            print("  (didn't understand that - press a, s, d, f, or g)")
 
     return ask
 
@@ -112,8 +121,9 @@ def run_main_loop(session: Session, ask_response) -> None:
     print("the one you just heard. Differences start out large and should get")
     print("harder to hear as the test learns your curve. Progress saves after")
     print("every trial, so it's safe to stop anytime with 'x' and resume later.")
-    print("Didn't catch one, or got distracted? Press 'a' - it's thrown out,")
-    print("not counted as a real answer, and doesn't change your results.")
+    print("Didn't catch one, or got distracted? Press 'a' - it's thrown out, not")
+    print("counted as a real answer. 'g' replays both tones if you want another")
+    print("listen before answering.")
     print()
 
     session.prime()
@@ -123,7 +133,8 @@ def run_main_loop(session: Session, ask_response) -> None:
         conv = session.convergence_fraction()
         if conv >= 0.9 and not announced_converged:
             print(
-                f"\n{conv:.0%} of bands have converged - you can stop anytime now "
+                f"\n{conv:.0%} of bands have converged (within roughly "
+                f"+/-{session.uncertainty_db():.1f} dB) - you can stop anytime now "
                 "with 'x', or keep going to refine further.\n"
             )
             announced_converged = True
@@ -131,11 +142,12 @@ def run_main_loop(session: Session, ask_response) -> None:
             outcome = session.run_trial()
         except QuitRequested:
             break
-        if outcome.response == INAUDIBLE_RESPONSE:
-            print("  (discarded - not counted)")
-            continue
         trial += 1
-        print(f"  trial {session.model.trial_num} done ({conv:.0%} converged)")
+        misses_note = f", {outcome.misses} retried" if outcome.misses else ""
+        print(
+            f"  trial {session.model.trial_num} done ({conv:.0%} converged, "
+            f"+/-{session.uncertainty_db():.1f} dB{misses_note})"
+        )
 
 
 def cmd_run(args: argparse.Namespace) -> None:
@@ -174,7 +186,8 @@ def cmd_run(args: argparse.Namespace) -> None:
         print("Any progress from completed trials was already saved.", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\nSaved. {session.convergence_fraction():.0%} of bands converged, "
+    print(f"\nSaved. {session.convergence_fraction():.0%} of bands converged "
+          f"(roughly +/-{session.uncertainty_db():.1f} dB), "
           f"{session.model.trial_num} trials so far "
           f"({session.discarded_count} discarded as not heard).")
     print(f"Run `earcal report --session {args.session}` for your curve.")

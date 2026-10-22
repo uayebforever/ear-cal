@@ -36,6 +36,17 @@ LEARNING_RATE = 1.5
 ANCHOR_EVERY_N_TRIALS = 6
 REPEAT_BAND_PROB = 0.08
 
+# The presented level is otherwise an unweighted random walk (each trial's
+# level is the last one plus an offset correction plus a random probe),
+# which has no pull back toward a comfortable listening level and will
+# wander - a classic random walk's variance grows without bound. This is
+# the fraction of each trial's target level pulled back toward the
+# session's fixed base_level_db (what "equally loud as the reference, at
+# the volume the user set at the start" would predict for next_band on
+# its own), which bounds the long-run drift while barely affecting any
+# single trial.
+RECENTER_PULL = 0.25
+
 
 @dataclass
 class BandState:
@@ -93,7 +104,11 @@ class HearingModel:
         return candidates[choice]
 
     def plan_trial(
-        self, prev_band: Band, prev_level_db: float, next_band: Band
+        self,
+        prev_band: Band,
+        prev_level_db: float,
+        next_band: Band,
+        base_level_db: float = 0.0,
     ) -> tuple[float, float]:
         """Return (next_level_db, delta_db) for presenting next_band."""
         prev_state = self.states[prev_band.index]
@@ -105,8 +120,10 @@ class HearingModel:
         sign = self.rng.choice([-1.0, 1.0])
         delta_db = sign * magnitude
 
+        chain_equal_level = prev_level_db + prev_state.offset_db - next_state.offset_db
+        anchored_equal_level = base_level_db - next_state.offset_db
         predicted_equal_level = (
-            prev_level_db + prev_state.offset_db - next_state.offset_db
+            (1.0 - RECENTER_PULL) * chain_equal_level + RECENTER_PULL * anchored_equal_level
         )
         next_level_db = predicted_equal_level + delta_db
         return next_level_db, delta_db
@@ -167,6 +184,15 @@ class HearingModel:
     def convergence_fraction(self) -> float:
         converged = sum(1 for s in self.states.values() if s.converged())
         return converged / len(self.states)
+
+    def uncertainty_db(self) -> float:
+        """A rough +/- dB uncertainty estimate for the curve as a whole:
+        the median per-band step size, which is exactly the scale of
+        probe difference that band can no longer reliably resolve. Not a
+        rigorous confidence interval, just a ballpark "how settled is
+        this" number."""
+        steps = [s.step_db for s in self.states.values()]
+        return float(np.median(steps))
 
     def offsets(self) -> dict[int, float]:
         return {idx: s.offset_db for idx, s in self.states.items()}

@@ -57,7 +57,8 @@ def write_plot(session: Session, path: str) -> None:
     ax.set_title(
         f"Personal loudness-correction curve "
         f"({session.model.trial_num} trials, "
-        f"{session.convergence_fraction():.0%} converged)"
+        f"{session.convergence_fraction():.0%} converged, "
+        f"roughly +/-{session.uncertainty_db():.1f} dB)"
     )
     ax.legend()
     ax.grid(True, alpha=0.3)
@@ -76,6 +77,10 @@ def write_report(session: Session, out_dir: str) -> None:
 
     print(f"Wrote {csv_path}")
     print(f"Wrote {plot_path}")
+    print(
+        f"{session.convergence_fraction():.0%} of bands converged, "
+        f"roughly +/-{session.uncertainty_db():.1f} dB overall"
+    )
 
     unconverged = [
         b.freq_hz

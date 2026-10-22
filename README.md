@@ -34,6 +34,14 @@ anchored and stop long chains of comparisons from drifting. Probe
 direction and magnitude are randomized each trial - nothing about the
 sequence is fixed, so there's no pattern to anticipate.
 
+The *presented level* is also a running chain (each trial's level is the
+last one plus an offset correction plus a random probe), which left
+alone is just a random walk with no pull back toward a comfortable
+volume - it can wander quite far from where you started over a long
+session. `model.plan_trial` corrects for this by blending in a pull back
+toward the session's fixed base level (`RECENTER_PULL`), bounding the
+long-run drift without materially affecting any single comparison.
+
 `earcal/simulate.py` runs this whole procedure against a simulated
 listener with a known hearing curve and realistic response noise, so the
 algorithm's convergence behavior can be (and was) validated without
@@ -72,13 +80,26 @@ First run walks you through:
    relative to that level.
 2. **Practice** - a handful of unscored trials with obvious differences,
    just to get used to responding.
-3. **The real test** - four adjacent keys, no Enter needed:
-   `a` didn't hear it · `s` quieter · `d` same · `f` louder. `x` stops
-   anytime. Progress saves after every trial, so stopping and resuming
-   later (`earcal run` again, same `--session` path) picks up exactly
-   where you left off. A `didn't hear` response is thrown out rather
-   than scored - it doesn't move your estimate, and the tone you're
-   next compared against stays whatever you last actually heard.
+3. **The real test** - five adjacent keys, no Enter needed:
+   `a` didn't hear it · `s` quieter · `d` same · `f` louder ·
+   `g` play both tones again. `x` stops anytime. Progress saves after
+   every trial, so stopping and resuming later (`earcal run` again, same
+   `--session` path) picks up exactly where you left off.
+
+   `a` is thrown out rather than scored - it doesn't move your estimate,
+   and the tone you're next compared against stays whatever you last
+   actually heard (not the one you missed). The reference tone gets
+   replayed first, then a *different* candidate tone plays - repeated
+   misses keep replaying the same reference and trying a new candidate
+   each time, until you get one you can actually judge. `g` just replays
+   the current pair exactly as presented (no new reference, no new
+   candidate, nothing discarded) if you want another listen before
+   deciding.
+
+The test reports convergence as both a percentage of bands settled and a
+rough +/- dB figure (the typical step size still being probed) - a ballpark
+of how much smaller a difference would need to be before you couldn't
+reliably call it anymore.
 
 When you've got enough convergence (the test tells you when most bands
 are there, but you can keep refining):

@@ -23,6 +23,11 @@ from earcal.synth import MAX_LEVEL_DB, MIN_LEVEL_DB
 SCHEMA_VERSION = 1
 
 INAUDIBLE_RESPONSE = "inaudible"
+REPEAT_RESPONSE = "repeat"
+
+# Pause between two tones played back-to-back for a replay/repeat, so they
+# don't blend into what sounds like one continuous note.
+REPLAY_GAP_S = 0.25
 
 PlayTone = Callable[[float, float], None]
 AskResponse = Callable[[], str]
@@ -35,6 +40,7 @@ class TrialOutcome:
     next_level_db: float
     delta_db: float
     response: str
+    misses: int = 0
 
 
 class Session:
@@ -144,39 +150,72 @@ class Session:
         self.prev_band_idx = ref.index
         self.prev_level_db = self.base_level_db
 
+    def _pick_candidate(
+        self, prev_band: Band, prev_level_db: float
+    ) -> tuple[Band, float, float]:
+        next_band = self.model.select_next_band(prev_band.index)
+        next_level_db, delta_db = self.model.plan_trial(
+            prev_band, prev_level_db, next_band, self.base_level_db
+        )
+        next_level_db = max(MIN_LEVEL_DB, min(MAX_LEVEL_DB, next_level_db))
+        return next_band, next_level_db, delta_db
+
     def run_trial(self) -> TrialOutcome:
+        """Play one new tone and compare it to the last one heard.
+
+        'repeat' replays the same pair again with no other change.
+        'inaudible' is discarded (never fed to the model, never becomes
+        the new "last sound heard") and retried with a *different*
+        candidate tone, but not before replaying the original reference
+        tone first, since a miss leaves a gap that can make its memory
+        go stale. Either way, prev_band/prev_level_db - the fixed
+        reference for every retry - stay exactly what they were when
+        this trial started until a real (louder/same/quieter) answer is
+        given.
+        """
         if self.prev_band_idx is None:
             raise RuntimeError("call prime() before run_trial()")
 
         prev_band = self.bands[self.prev_band_idx]
-        next_band = self.model.select_next_band(self.prev_band_idx)
-        next_level_db, delta_db = self.model.plan_trial(
-            prev_band, self.prev_level_db, next_band
-        )
-        next_level_db = max(MIN_LEVEL_DB, min(MAX_LEVEL_DB, next_level_db))
+        prev_level_db = self.prev_level_db
 
+        next_band, next_level_db, delta_db = self._pick_candidate(prev_band, prev_level_db)
         self.play_tone(next_band.freq_hz, next_level_db)
-        response = self.ask_response()
 
-        outcome = TrialOutcome(prev_band, next_band, next_level_db, delta_db, response)
+        misses = 0
+        while True:
+            response = self.ask_response()
 
-        if response == INAUDIBLE_RESPONSE:
-            # Discarded: not fed to the model, and the "last sound heard"
-            # stays whatever it was before this one, since the user didn't
-            # actually perceive it.
-            self.discarded_count += 1
-            self.save()
-            return outcome
+            if response == REPEAT_RESPONSE:
+                self.play_tone(prev_band.freq_hz, prev_level_db)
+                time.sleep(REPLAY_GAP_S)
+                self.play_tone(next_band.freq_hz, next_level_db)
+                continue
+
+            if response == INAUDIBLE_RESPONSE:
+                self.discarded_count += 1
+                misses += 1
+                self.save()
+                self.play_tone(prev_band.freq_hz, prev_level_db)
+                time.sleep(REPLAY_GAP_S)
+                next_band, next_level_db, delta_db = self._pick_candidate(
+                    prev_band, prev_level_db
+                )
+                self.play_tone(next_band.freq_hz, next_level_db)
+                continue
+
+            break
 
         self.model.observe(
             self.prev_band_idx,
             next_band.index,
             delta_db,
             response,
-            prev_level_db=self.prev_level_db,
+            prev_level_db=prev_level_db,
             next_level_db=next_level_db,
         )
 
+        outcome = TrialOutcome(prev_band, next_band, next_level_db, delta_db, response, misses)
         self.prev_band_idx = next_band.index
         self.prev_level_db = next_level_db
         self.save()
@@ -184,6 +223,9 @@ class Session:
 
     def convergence_fraction(self) -> float:
         return self.model.convergence_fraction()
+
+    def uncertainty_db(self) -> float:
+        return self.model.uncertainty_db()
 
     def offsets_by_freq(self) -> dict[float, float]:
         offsets = self.model.offsets()
