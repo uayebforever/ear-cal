@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# local test sessions / generated reports
+*.earcal_session.json
+earcal_curve.csv
+earcal_curve.png
