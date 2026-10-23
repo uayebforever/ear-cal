@@ -76,44 +76,57 @@ def test_save_and_load_roundtrip(tmp_path):
     assert len(reloaded.model.history) == trial_count_before + 1
 
 
-def test_inaudible_response_is_retried_with_replay_until_a_real_answer(tmp_path, monkeypatch):
-    monkeypatch.setattr("earcal.session.time.sleep", lambda s: None)
+def test_inaudible_response_is_scored_as_quieter_and_recorded(tmp_path):
     calls = []
-    responses = iter(["inaudible", "inaudible", "same"])
+    session = Session.new(
+        play_tone=_fake_player(calls),
+        ask_response=lambda: "inaudible",
+        path=str(tmp_path / "session.json"),
+        seed=0,
+    )
+    session.prime()
+    prev_idx_before = session.prev_band_idx
+    prev_level_before = session.prev_level_db
+
+    outcome = session.run_trial()
+
+    assert outcome.response == "inaudible"
+    assert outcome.scored_as == "quieter"
+    assert session.inaudible_count == 1
+    assert len(session.model.history) == 1  # it IS data now
+    assert session.model.history[0].response == "quieter"
+
+    # a tone the user couldn't hear can't anchor the next comparison, so
+    # "last sound heard" does not advance to it
+    assert session.prev_band_idx == prev_idx_before
+    assert session.prev_level_db == prev_level_before
+    assert session.needs_reference_replay is True
+
+
+def test_reference_is_replayed_before_the_next_candidate_after_a_miss(tmp_path):
+    calls = []
+    responses = iter(["inaudible", "same"])
     session = Session.new(
         play_tone=_fake_player(calls),
         ask_response=lambda: next(responses),
         path=str(tmp_path / "session.json"),
         seed=0,
     )
-    session.prime()  # calls[0]: the reference tone
+    session.prime()  # calls[0]: reference tone
     prev_idx_before = session.prev_band_idx
     prev_level_before = session.prev_level_db
+
+    session.run_trial()  # calls[1]: a candidate, missed
     calls.clear()
 
-    outcome = session.run_trial()
+    session.run_trial()  # should replay the reference before its own candidate
 
-    assert outcome.response == "same"
-    assert outcome.misses == 2
-    assert session.discarded_count == 2
-    assert len(session.model.history) == 1  # only the final, real answer is recorded
-
-    # calls: [candidate1, replay-A, candidate2, replay-A, candidate3]
-    assert len(calls) == 5
-    reference_tone = (
-        session.bands[prev_idx_before].freq_hz,
-        prev_level_before,
-    )
-    assert calls[1] == reference_tone
-    assert calls[3] == reference_tone
-
-    # "last sound heard" only advances to the tone that actually got a
-    # real answer, not either of the misses.
-    assert session.prev_band_idx == outcome.next_band.index
-    assert session.prev_level_db == outcome.next_level_db
+    assert len(calls) == 2
+    assert calls[0] == (session.bands[prev_idx_before].freq_hz, prev_level_before)
+    assert session.needs_reference_replay is False
 
 
-def test_repeat_response_replays_the_same_pair_without_discarding(tmp_path, monkeypatch):
+def test_repeat_response_replays_the_same_pair_without_scoring(tmp_path, monkeypatch):
     monkeypatch.setattr("earcal.session.time.sleep", lambda s: None)
     calls = []
     responses = iter([REPEAT_RESPONSE, REPEAT_RESPONSE, "louder"])
@@ -129,8 +142,8 @@ def test_repeat_response_replays_the_same_pair_without_discarding(tmp_path, monk
     outcome = session.run_trial()
 
     assert outcome.response == "louder"
-    assert outcome.misses == 0
-    assert session.discarded_count == 0
+    assert outcome.scored_as == "louder"
+    assert session.inaudible_count == 0
     assert len(session.model.history) == 1
 
     # calls: [candidate, replay-A, replay-candidate, replay-A, replay-candidate]
@@ -140,13 +153,11 @@ def test_repeat_response_replays_the_same_pair_without_discarding(tmp_path, monk
     assert calls[4] == candidate_tone
 
 
-def test_discarded_count_persists_across_save_load(tmp_path, monkeypatch):
-    monkeypatch.setattr("earcal.session.time.sleep", lambda s: None)
+def test_inaudible_count_and_replay_flag_persist_across_save_load(tmp_path):
     path = str(tmp_path / "session.json")
-    responses = itertools.cycle(["inaudible", "same"])
     session = Session.new(
         play_tone=_fake_player([]),
-        ask_response=lambda: next(responses),
+        ask_response=lambda: "inaudible",
         path=path,
         seed=0,
     )
@@ -154,6 +165,7 @@ def test_discarded_count_persists_across_save_load(tmp_path, monkeypatch):
     session.run_trial()
     session.run_trial()
 
-    assert session.discarded_count == 2
+    assert session.inaudible_count == 2
     reloaded = Session.load(path, play_tone=_fake_player([]), ask_response=lambda: "same")
-    assert reloaded.discarded_count == 2
+    assert reloaded.inaudible_count == 2
+    assert reloaded.needs_reference_replay is True

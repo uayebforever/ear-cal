@@ -64,7 +64,7 @@ def make_ask_response(prompt_prefix: str = "") -> callable:
             if key in RESPONSE_KEYS:
                 resp = RESPONSE_KEYS[key]
                 if resp == INAUDIBLE_RESPONSE:
-                    print("  (missed it - replaying the reference, then a different tone)")
+                    print("  (counted as quieter - replaying the reference next)")
                 elif resp == REPEAT_RESPONSE:
                     print("  (playing both again)")
                 return resp
@@ -121,9 +121,11 @@ def run_main_loop(session: Session, ask_response) -> None:
     print("the one you just heard. Differences start out large and should get")
     print("harder to hear as the test learns your curve. Progress saves after")
     print("every trial, so it's safe to stop anytime with 'x' and resume later.")
-    print("Didn't catch one, or got distracted? Press 'a' - it's thrown out, not")
-    print("counted as a real answer. 'g' replays both tones if you want another")
-    print("listen before answering.")
+    print("If a tone is so quiet you genuinely can't hear it, press 'a' - that")
+    print("still counts (as 'quieter'), but since you didn't hear it, it can't")
+    print("be what the next tone gets compared to, so the reference tone plays")
+    print("again first. If you just weren't paying attention, use 'g' instead")
+    print("to replay both tones without it counting as anything.")
     print()
 
     session.prime()
@@ -143,10 +145,10 @@ def run_main_loop(session: Session, ask_response) -> None:
         except QuitRequested:
             break
         trial += 1
-        misses_note = f", {outcome.misses} retried" if outcome.misses else ""
+        note = " - inaudible, scored as quieter" if outcome.response == INAUDIBLE_RESPONSE else ""
         print(
             f"  trial {session.model.trial_num} done ({conv:.0%} converged, "
-            f"+/-{session.uncertainty_db():.1f} dB{misses_note})"
+            f"+/-{session.uncertainty_db():.1f} dB{note})"
         )
 
 
@@ -189,7 +191,7 @@ def cmd_run(args: argparse.Namespace) -> None:
     print(f"\nSaved. {session.convergence_fraction():.0%} of bands converged "
           f"(roughly +/-{session.uncertainty_db():.1f} dB), "
           f"{session.model.trial_num} trials so far "
-          f"({session.discarded_count} discarded as not heard).")
+          f"({session.inaudible_count} of them scored as inaudible/quieter).")
     print(f"Run `earcal report --session {args.session}` for your curve.")
 
 

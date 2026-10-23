@@ -86,15 +86,13 @@ First run walks you through:
    every trial, so stopping and resuming later (`earcal run` again, same
    `--session` path) picks up exactly where you left off.
 
-   `a` is thrown out rather than scored - it doesn't move your estimate,
-   and the tone you're next compared against stays whatever you last
-   actually heard (not the one you missed). The reference tone gets
-   replayed first, then a *different* candidate tone plays - repeated
-   misses keep replaying the same reference and trying a new candidate
-   each time, until you get one you can actually judge. `g` just replays
-   the current pair exactly as presented (no new reference, no new
-   candidate, nothing discarded) if you want another listen before
-   deciding.
+   `a` means "that was so quiet I didn't hear it" - which *is* an
+   answer (it's scored as "quieter"), not a throwaway. What it can't do
+   is serve as a memory anchor for the next comparison, so the reference
+   tone replays before the next new candidate plays. If you just weren't
+   paying attention rather than genuinely not hearing it, use `g`
+   instead: it replays the current pair exactly as presented and isn't
+   scored as anything.
 
 The test reports convergence as both a percentage of bands settled and a
 rough +/- dB figure (the typical step size still being probed) - a ballpark

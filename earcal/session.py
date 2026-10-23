@@ -40,7 +40,7 @@ class TrialOutcome:
     next_level_db: float
     delta_db: float
     response: str
-    misses: int = 0
+    scored_as: str
 
 
 class Session:
@@ -55,7 +55,8 @@ class Session:
         base_level_db: float = 0.0,
         path: str | None = None,
         created_at: float | None = None,
-        discarded_count: int = 0,
+        inaudible_count: int = 0,
+        needs_reference_replay: bool = False,
     ) -> None:
         self.bands = bands
         self.model = model
@@ -66,7 +67,8 @@ class Session:
         self.base_level_db = base_level_db
         self.path = path
         self.created_at = created_at or time.time()
-        self.discarded_count = discarded_count
+        self.inaudible_count = inaudible_count
+        self.needs_reference_replay = needs_reference_replay
 
     @classmethod
     def new(
@@ -110,7 +112,8 @@ class Session:
             base_level_db=data["base_level_db"],
             path=path,
             created_at=data["created_at"],
-            discarded_count=data.get("discarded_count", 0),
+            inaudible_count=data.get("inaudible_count", data.get("discarded_count", 0)),
+            needs_reference_replay=data.get("needs_reference_replay", False),
         )
 
     def save(self) -> None:
@@ -124,7 +127,8 @@ class Session:
             "base_level_db": self.base_level_db,
             "prev_band_idx": self.prev_band_idx,
             "prev_level_db": self.prev_level_db,
-            "discarded_count": self.discarded_count,
+            "inaudible_count": self.inaudible_count,
+            "needs_reference_replay": self.needs_reference_replay,
             "model": self.model.snapshot(),
             "history": [dataclasses.asdict(r) for r in self.model.history],
             "rng_state": self.model.rng.bit_generator.state,
@@ -163,15 +167,13 @@ class Session:
     def run_trial(self) -> TrialOutcome:
         """Play one new tone and compare it to the last one heard.
 
-        'repeat' replays the same pair again with no other change.
-        'inaudible' is discarded (never fed to the model, never becomes
-        the new "last sound heard") and retried with a *different*
-        candidate tone, but not before replaying the original reference
-        tone first, since a miss leaves a gap that can make its memory
-        go stale. Either way, prev_band/prev_level_db - the fixed
-        reference for every retry - stay exactly what they were when
-        this trial started until a real (louder/same/quieter) answer is
-        given.
+        'repeat' just replays the current pair again, nothing else
+        changes. 'inaudible' ("so quiet I didn't hear it") *does* count
+        as data - it's scored as "quieter" than the reference, since
+        that's exactly what it means - but the tone itself can't serve
+        as a memory anchor for the next comparison, so prev_band/
+        prev_level_db stay put and the next trial replays the reference
+        before playing its new candidate.
         """
         if self.prev_band_idx is None:
             raise RuntimeError("call prime() before run_trial()")
@@ -179,45 +181,43 @@ class Session:
         prev_band = self.bands[self.prev_band_idx]
         prev_level_db = self.prev_level_db
 
+        if self.needs_reference_replay:
+            self.play_tone(prev_band.freq_hz, prev_level_db)
+            time.sleep(REPLAY_GAP_S)
+            self.needs_reference_replay = False
+
         next_band, next_level_db, delta_db = self._pick_candidate(prev_band, prev_level_db)
         self.play_tone(next_band.freq_hz, next_level_db)
 
-        misses = 0
         while True:
             response = self.ask_response()
+            if response != REPEAT_RESPONSE:
+                break
+            self.play_tone(prev_band.freq_hz, prev_level_db)
+            time.sleep(REPLAY_GAP_S)
+            self.play_tone(next_band.freq_hz, next_level_db)
 
-            if response == REPEAT_RESPONSE:
-                self.play_tone(prev_band.freq_hz, prev_level_db)
-                time.sleep(REPLAY_GAP_S)
-                self.play_tone(next_band.freq_hz, next_level_db)
-                continue
-
-            if response == INAUDIBLE_RESPONSE:
-                self.discarded_count += 1
-                misses += 1
-                self.save()
-                self.play_tone(prev_band.freq_hz, prev_level_db)
-                time.sleep(REPLAY_GAP_S)
-                next_band, next_level_db, delta_db = self._pick_candidate(
-                    prev_band, prev_level_db
-                )
-                self.play_tone(next_band.freq_hz, next_level_db)
-                continue
-
-            break
-
+        scored_as = "quieter" if response == INAUDIBLE_RESPONSE else response
         self.model.observe(
             self.prev_band_idx,
             next_band.index,
             delta_db,
-            response,
+            scored_as,
             prev_level_db=prev_level_db,
             next_level_db=next_level_db,
         )
 
-        outcome = TrialOutcome(prev_band, next_band, next_level_db, delta_db, response, misses)
-        self.prev_band_idx = next_band.index
-        self.prev_level_db = next_level_db
+        outcome = TrialOutcome(prev_band, next_band, next_level_db, delta_db, response, scored_as)
+
+        if response == INAUDIBLE_RESPONSE:
+            self.inaudible_count += 1
+            self.needs_reference_replay = True
+            # prev_band/prev_level_db deliberately NOT advanced: a tone
+            # the user couldn't hear can't anchor the next comparison.
+        else:
+            self.prev_band_idx = next_band.index
+            self.prev_level_db = next_level_db
+
         self.save()
         return outcome
 
