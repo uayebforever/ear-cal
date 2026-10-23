@@ -169,3 +169,60 @@ def test_inaudible_count_and_replay_flag_persist_across_save_load(tmp_path):
     reloaded = Session.load(path, play_tone=_fake_player([]), ask_response=lambda: "same")
     assert reloaded.inaudible_count == 2
     assert reloaded.needs_reference_replay is True
+
+
+def test_tuned_offset_combines_measured_and_adjustment(tmp_path):
+    session = Session.new(
+        play_tone=_fake_player([]),
+        ask_response=lambda: "same",
+        path=str(tmp_path / "session.json"),
+        seed=0,
+    )
+    idx = session.bands[3].index
+    session.model.states[idx].offset_db = 4.0
+
+    assert session.measured_offset_db(idx) == 4.0
+    assert session.tuned_offset_db(idx) == 4.0  # no adjustment yet
+
+    session.adjust_tune(idx, 1.0)
+    session.adjust_tune(idx, 1.0)
+    assert session.tuned_offset_db(idx) == 6.0
+    assert session.measured_offset_db(idx) == 4.0  # measured curve itself untouched
+
+    session.adjust_tune(idx, -0.5)
+    assert session.tuned_offset_db(idx) == 5.5
+
+
+def test_play_band_tuned_uses_base_plus_tuned_offset(tmp_path):
+    calls = []
+    session = Session.new(
+        play_tone=_fake_player(calls),
+        ask_response=lambda: "same",
+        path=str(tmp_path / "session.json"),
+        seed=0,
+        base_level_db=-8.0,
+    )
+    idx = session.bands[5].index
+    session.model.states[idx].offset_db = 3.0
+    session.adjust_tune(idx, 2.0)
+
+    session.play_band_tuned(idx)
+
+    assert calls == [(session.bands[idx].freq_hz, -3.0)]  # -8 + 3 + 2
+
+
+def test_tune_adjustments_persist_across_save_load(tmp_path):
+    path = str(tmp_path / "session.json")
+    session = Session.new(
+        play_tone=_fake_player([]),
+        ask_response=lambda: "same",
+        path=path,
+        seed=0,
+    )
+    idx = session.bands[2].index
+    session.adjust_tune(idx, 3.5)
+    session.save()
+
+    reloaded = Session.load(path, play_tone=_fake_player([]), ask_response=lambda: "same")
+    assert reloaded.tune_adjustments_db[idx] == 3.5
+    assert reloaded.tuned_offset_db(idx) == 3.5

@@ -14,8 +14,9 @@ import os
 import sys
 
 from earcal.audio_io import AudioUnavailableError, play_blocking, probe_output_device
+from earcal.bands import reference_band
 from earcal.keypress import read_key
-from earcal.session import INAUDIBLE_RESPONSE, REPEAT_RESPONSE, Session
+from earcal.session import INAUDIBLE_RESPONSE, REPEAT_RESPONSE, Session, TUNE_STEP_DB
 from earcal.synth import synth_tone
 
 DEFAULT_SESSION_PATH = os.path.expanduser("~/.earcal/session.json")
@@ -35,6 +36,12 @@ PROMPT = (
     "[a] didn't hear   [s] quieter   [d] same   [f] louder   "
     "[g] play again   ([x] to stop): "
 )
+
+TUNE_QUIT_KEYS = {"x"}
+TUNE_DOWN_KEYS = {"a"}
+TUNE_UP_KEYS = {"d"}
+TUNE_LOUDER_KEYS = {"w"}
+TUNE_QUIETER_KEYS = {"s"}
 
 
 class QuitRequested(Exception):
@@ -152,6 +159,106 @@ def run_main_loop(session: Session, ask_response) -> None:
         )
 
 
+def run_tune_loop(session: Session) -> None:
+    """Sighted playback mode: walk the measured curve by ear and nudge
+    individual bands louder/quieter. Not part of the blind calibration -
+    this is for listening to what the measured curve sounds like and
+    hand-correcting it."""
+    print()
+    print("=== Tune mode ===")
+    print("Playing your measured curve back, one band at a time. Unlike the")
+    print("main test, you can see what's playing here - this is for listening")
+    print("and hand-adjusting, not blind measurement.")
+    print("  a / d   move down / up in frequency")
+    print("  w / s   make the current band louder / quieter")
+    print("  x       stop and write a comparison plot")
+    print()
+
+    idx = reference_band(session.bands).index
+
+    def status() -> None:
+        band = session.bands[idx]
+        measured = session.measured_offset_db(idx)
+        adjustment = session.tune_adjustments_db.get(idx, 0.0)
+        tuned = measured + adjustment
+        print(
+            f"  {band.freq_hz:g} Hz   measured {measured:+.1f} dB   "
+            f"your adjustment {adjustment:+.1f} dB   effective {tuned:+.1f} dB"
+        )
+
+    session.play_band_tuned(idx)
+    status()
+
+    while True:
+        try:
+            key = read_key()
+        except KeyboardInterrupt:
+            print()
+            break
+
+        if key in TUNE_QUIT_KEYS:
+            break
+        elif key in TUNE_DOWN_KEYS:
+            if idx == 0:
+                print("  (already at the lowest band)")
+                continue
+            idx -= 1
+        elif key in TUNE_UP_KEYS:
+            if idx == len(session.bands) - 1:
+                print("  (already at the highest band)")
+                continue
+            idx += 1
+        elif key in TUNE_LOUDER_KEYS:
+            session.adjust_tune(idx, TUNE_STEP_DB)
+        elif key in TUNE_QUIETER_KEYS:
+            session.adjust_tune(idx, -TUNE_STEP_DB)
+        else:
+            print("  (press a/d to move, w/s to adjust, x to stop)")
+            continue
+
+        session.play_band_tuned(idx)
+        status()
+
+
+def cmd_tune(args: argparse.Namespace) -> None:
+    device = probe_output_device()
+    if device is None:
+        print(
+            "No audio output device found. This program needs real speakers or "
+            "headphones to be useful - run it on your own machine, not a "
+            "headless container.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print(f"Output device: {device}")
+
+    if not os.path.exists(args.session):
+        print(
+            f"No session found at {args.session} - run `earcal run` first to "
+            "measure a curve before tuning it.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    play_tone = make_play_tone()
+    session = Session.load(args.session, play_tone, ask_response=lambda: "same")
+
+    try:
+        run_tune_loop(session)
+    except AudioUnavailableError as exc:
+        print(f"\nAudio playback failed: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    session.save()
+
+    from earcal.report import write_tuned_plot
+
+    os.makedirs(args.out_dir, exist_ok=True)
+    plot_path = os.path.join(args.out_dir, "earcal_tuned_curve.png")
+    write_tuned_plot(session, plot_path)
+    print(f"\nSaved. Wrote {plot_path}")
+
+
 def cmd_run(args: argparse.Namespace) -> None:
     device = probe_output_device()
     if device is None:
@@ -215,6 +322,11 @@ def build_parser() -> argparse.ArgumentParser:
     report_p.add_argument("--session", default=DEFAULT_SESSION_PATH)
     report_p.add_argument("--out-dir", default=".")
     report_p.set_defaults(func=cmd_report)
+
+    tune_p = sub.add_parser("tune", help="play back your measured curve and fine-tune it by ear")
+    tune_p.add_argument("--session", default=DEFAULT_SESSION_PATH)
+    tune_p.add_argument("--out-dir", default=".")
+    tune_p.set_defaults(func=cmd_tune)
 
     return parser
 

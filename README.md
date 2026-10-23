@@ -110,6 +110,28 @@ writes `earcal_curve.csv` (frequency, measured offset in dB, remaining
 uncertainty, convergence flag) and `earcal_curve.png` (a plot of your
 curve against a generic reference shape for context).
 
+### Listening to and fine-tuning the curve
+
+```
+earcal tune --session ~/.earcal/session.json --out-dir .
+```
+
+Unlike the blind test, this is sighted: it plays your measured curve
+back one band at a time and shows you what's playing, so you can listen
+and hand-correct it rather than just trust the numbers.
+
+- `a` / `d` - move down / up in frequency
+- `w` / `s` - make the current band louder / quieter
+- `x` - stop
+
+Each nudge is a small adjustment layered on top of the measured offset
+(not a replacement for it), and replays that band immediately so you can
+hear the change. On exit it saves your adjustments back into the session
+(so re-running `earcal tune` later picks up where you left off) and
+writes `earcal_tuned_curve.png`, overlaying the measured curve and your
+fine-tuned one - no CSV, since the measured data is already in
+`earcal_curve.csv`.
+
 ## Safety
 
 Playback level is hard-clamped (`earcal/synth.py`, `MIN_LEVEL_DB` /

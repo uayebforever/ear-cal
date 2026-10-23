@@ -29,6 +29,9 @@ REPEAT_RESPONSE = "repeat"
 # don't blend into what sounds like one continuous note.
 REPLAY_GAP_S = 0.25
 
+# dB nudge per keypress in tune mode.
+TUNE_STEP_DB = 1.0
+
 PlayTone = Callable[[float, float], None]
 AskResponse = Callable[[], str]
 
@@ -57,6 +60,7 @@ class Session:
         created_at: float | None = None,
         inaudible_count: int = 0,
         needs_reference_replay: bool = False,
+        tune_adjustments_db: dict[int, float] | None = None,
     ) -> None:
         self.bands = bands
         self.model = model
@@ -69,6 +73,7 @@ class Session:
         self.created_at = created_at or time.time()
         self.inaudible_count = inaudible_count
         self.needs_reference_replay = needs_reference_replay
+        self.tune_adjustments_db = dict(tune_adjustments_db) if tune_adjustments_db else {}
 
     @classmethod
     def new(
@@ -114,6 +119,9 @@ class Session:
             created_at=data["created_at"],
             inaudible_count=data.get("inaudible_count", data.get("discarded_count", 0)),
             needs_reference_replay=data.get("needs_reference_replay", False),
+            tune_adjustments_db={
+                int(idx): db for idx, db in data.get("tune_adjustments_db", {}).items()
+            },
         )
 
     def save(self) -> None:
@@ -129,6 +137,9 @@ class Session:
             "prev_level_db": self.prev_level_db,
             "inaudible_count": self.inaudible_count,
             "needs_reference_replay": self.needs_reference_replay,
+            "tune_adjustments_db": {
+                str(idx): db for idx, db in self.tune_adjustments_db.items()
+            },
             "model": self.model.snapshot(),
             "history": [dataclasses.asdict(r) for r in self.model.history],
             "rng_state": self.model.rng.bit_generator.state,
@@ -230,3 +241,23 @@ class Session:
     def offsets_by_freq(self) -> dict[float, float]:
         offsets = self.model.offsets()
         return {b.freq_hz: offsets[b.index] for b in self.bands}
+
+    def measured_offset_db(self, band_idx: int) -> float:
+        return self.model.offsets()[band_idx]
+
+    def tuned_offset_db(self, band_idx: int) -> float:
+        return self.measured_offset_db(band_idx) + self.tune_adjustments_db.get(band_idx, 0.0)
+
+    def adjust_tune(self, band_idx: int, delta_db: float) -> None:
+        self.tune_adjustments_db[band_idx] = (
+            self.tune_adjustments_db.get(band_idx, 0.0) + delta_db
+        )
+
+    def play_band_tuned(self, band_idx: int) -> None:
+        """Play a band at its currently tuned (measured + manual adjustment)
+        level, for the sighted playback/tune mode - not part of the blind
+        calibration trial flow."""
+        band = self.bands[band_idx]
+        level_db = self.base_level_db + self.tuned_offset_db(band_idx)
+        level_db = max(MIN_LEVEL_DB, min(MAX_LEVEL_DB, level_db))
+        self.play_tone(band.freq_hz, level_db)
